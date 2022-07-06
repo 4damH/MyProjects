@@ -1,6 +1,6 @@
 ---
 title: "Report"
-author: "Adam Hudzik, student nr 20023160"
+author: "Adam Hudzik, student nr xxxxxxxx"
 date: "24/01/2021"
 output:
   html_document: default
