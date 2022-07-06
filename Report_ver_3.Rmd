@@ -1,0 +1,870 @@
+---
+title: "Report"
+author: "Adam Hudzik, student nr 20023160"
+date: "24/01/2021"
+output:
+  html_document: default
+bibliography: "bibliography.bib"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, # don't show the code on printed document
+                     warning = FALSE, #don't show warnings
+                     eval = TRUE, # allow to run every chunk of code
+                     message = FALSE, # don't show messages
+                     comment = NA, # to remove all hashes in output html file
+                     out.width = '100%') # width setup
+# load libraries
+library(tidyverse)
+library(lubridate) # for dates
+library(plotly) # for charts
+library(kableExtra) # for tables
+```
+
+
+```{r import_clean_and_prepare_data, include = FALSE}
+# include = FALSE means that the code is still run, but nothing from
+# this chunk of code is put into the output document
+
+##=========== READ IN DATASETS =================================================
+
+#------------ SOURCES OF DATASETS ----------------------------------------------
+# covid deaths (cumulative total)
+# SOURCE: https://www.kaggle.com/antgoldbloom/covid19-data-from-john-hopkins-university?select=RAW_global_deaths.csv
+
+# covid confirmed cases (cumulative total)
+# SOURCE: https://www.kaggle.com/antgoldbloom/covid19-data-from-john-hopkins-university?select=RAW_global_confirmed_cases.csv
+
+# population density in Europe
+# SOURCE: https://ec.europa.eu/eurostat/databrowser/view/TPS00003/bookmark/table?lang=en&bookmarkId=06727f8a-b730-47ef-bac4-6fe8dbe3e4a2
+
+# population of european countries
+# SOURCE: https://ec.europa.eu/eurostat/databrowser/view/DEMO_R_GIND3__custom_521298/default/table?lang=en
+# (selected on the source website) latest two years 2018 and 2019
+
+# UNSD country codes
+# SOURCE: https://unstats.un.org/unsd/methodology/m49/overview
+#-------------------------------------------------------------------------------
+
+# read in covid datasets
+# create a list of covid datasets to read in
+covid_files_to_read_in = list.files(path = "datasets/",
+                              pattern = "RAW_global",
+                              full.names = TRUE)
+
+# read in all covid datasets
+covid_datasets_raw <- map(covid_files_to_read_in, read_csv)
+
+# read in additional datasets
+# list of population and density dfs
+eu_files_to_read_in = list.files(path = "datasets/",
+                                         pattern = "EU",
+                                         full.names = TRUE)
+
+# read in both dfs
+europe_population_and_pop_density_raw <- map(eu_files_to_read_in, read_csv)
+
+# read in USDN country codes
+country_codes = read_csv("datasets/UNSD — Methodology.csv")
+
+
+
+
+##========= CLEAN AND FORMAT DATASETS ==========================================
+
+# 1) prepare the data from additional datasets----------------------------------
+
+# prepare the country codes dataset ---------------------------------------
+## We need this dataset to obtain the names of the countries
+## to add them to the population and population density datasets in the next stage
+# extract data we need - 2 columns
+country_codes_selected = country_codes %>%
+  # select columns we need
+  select(`Country or Area`, `ISO-alpha2 Code`)
+
+
+
+# prepare population and population density datasets ----------------------
+
+## THE LATEST YEAR IN POPULATION DENSITY DATASET IS 2018
+## we need to get rid of 2019 data and leave only data for 2018 and column with names/codes
+## WE HAVE additional CHARACTER: p IN POPULATION COLUMN - VALUE FOR FRANCE (FR)
+## based on the information from the source website (Eurostat) it means provisional
+## change data format in Population column into numeric from character
+
+## IN POPULATION DATASET:
+## values in the first column looks like:
+## A;JAN;AL A;JAN;AL0 A;JAN;AL012 A;JAN;AL035
+## e.g. AL is the country code
+## IN SOME ROWS WE HAVE characters after country code it means that the data is 
+# about specific region of that country
+## We need to:
+## get rid of data about regions (they have additional endings to country codes)
+## obtain clear country codes (like AL, AT, etc.)
+
+## IN POPULATION DENSITY:
+## values in the first column looks like:
+## A;PER_KM2;FR A;PER_KM2;IS A;PER_KM2;EU28 A;PER_KM2;EU27_2020
+## e.g. FR, IS are the country codes
+## We have three values which are not about specific country:
+## A;PER_KM2;EU27_2007 - THIS IS VALUE OF POPULATION DENSITY FOR European Union - 27 countries (2007-2013)
+## A;PER_KM2;EU27_2020 - THIS IS VALUE OF POPULATION DENSITY FOR European Union - 27 countries (from 2020)
+## A;PER_KM2;EU28 - THIS IS VALUE OF POPULATION DENSITY FOR European Union - 28 countries (2013-2020)
+## We need to:
+## get rid of data about population density for whole EU (see the above - 3 rows)
+## obtain clear country codes (like FR, IS, etc.)
+
+
+# create the function that select, clean and format data for population
+# and population density datasets as above
+pop_and_pop_density_f <- function(df, name_of_the_dataset) {
+  cleaned_df <- df %>%
+    # select columns we need: names/codes and data from 2018 (the latest for pop_density)
+    select(1,`2018`) %>%
+    # remove "p" from data (provisional added to France population) in population df
+    mutate(across(where(is.character), str_remove_all, pattern = "[[:space:]]p")) %>%
+    # values in the second column as numeric
+    mutate(`2018` = as.numeric(`2018`))
+  # change population dataset
+  if("Population" %in% name_of_the_dataset) {
+    altered = cleaned_df %>%
+      # change column names
+      set_names(c("Country_Code", "Population_2018")) %>%
+      # get rid of data about regions
+      subset(., nchar(as.character(`Country_Code`)) <= 8) %>%
+      # get clear country codes from the first column
+      mutate(`Country_Code` = gsub("^.{6}", "", `Country_Code`))
+  }
+  # change population density dataset
+  if("Population_Density" %in% name_of_the_dataset) {
+    altered = cleaned_df %>%
+      # change column names
+      set_names(c("Country_Code", "Pop_density_[persons_per_km2]")) %>%
+      # get rid of data about total population for whole EU
+      subset(., nchar(as.character(`Country_Code`)) <= 12) %>%
+      # get clear country codes from the first column
+      mutate(`Country_Code` = gsub("^.{10}", "", `Country_Code`))
+  }
+  return(altered)
+}
+# set up the names in created list of covid dfs
+names(europe_population_and_pop_density_raw) <- c("Population",
+                                              "Population_Density")
+# apply created function
+europe_population_and_pop_density_cleaned = map2(europe_population_and_pop_density_raw,
+              names(europe_population_and_pop_density_raw),
+              pop_and_pop_density_f)
+
+#--------------------------------------------------------------------------
+
+## Datasets created above have 37 countries:
+## We have:
+## EUROPEAN UNION countries (27)
+## UNITED KINGDOM (1)
+## European Free Trade Association (EFTA) - (4 countries):
+## Iceland (IS) Norway (NO)  Liechtenstein (LI) Switzerland (CH) 
+## EU candidate countries - (5 countries)
+## Montenegro (ME)  North Macedonia (MK)  Albania (AL)  Serbia (RS)  Turkey (TR) 
+## source: https://ec.europa.eu/eurostat/statistics-explained/index.php/Glossary:Country_codes
+
+## We want to keep EU countries plus UK (27+1) only
+## we need to:
+## remove Iceland 	(IS)
+## remove Norway 	(NO)
+## remove  Liechtenstein 	(LI)
+## remove Switzerland 	(CH) 
+## remove Montenegro 	(ME) 
+## remove North Macedonia 	(MK) 
+## remove Albania 	(AL) 
+## remove Serbia 	(RS) 
+## remove Turkey 	(TR) 
+## and merge datasets (population density, population) with country names
+## from country_codes_selected dataset
+
+# create function that marge two datasets, add country names
+# and filter UK and EU countries only 
+eu_uk_pop_and_pop_density_merged = left_join(europe_population_and_pop_density_cleaned[[1]],
+          europe_population_and_pop_density_cleaned[[2]]) %>%
+  # add columns from country_codes_selected by joining them using country codes
+  left_join(country_codes_selected, 
+            by = c("Country_Code" = "ISO-alpha2 Code")) %>%
+  # change the name of the last column into Country
+  rename(c('Country' = 'Country or Area')) %>%
+  # remove countries which are not in EU and UK
+  filter(!(Country_Code %in% c("IS", 
+                               "NO", 
+                               "LI", 
+                               "CH", 
+                               "ME", 
+                               "MK", 
+                               "AL", 
+                               "RS", 
+                               "TR")), ) %>%
+  # change the column order
+  select(4, 1, 2, 3)
+
+
+####----- MISSING VALUES eu_uk_pop_and_pop_density_merged -----------------
+## WE HAVE MISSING VALUES IN THIS MERGED DATASET
+# create the table that shows missing values (rows contain NA in the Country column)
+missing_values_1 = (eu_uk_pop_and_pop_density_merged[is.na(eu_uk_pop_and_pop_density_merged$"Country"),]) 
+
+## WHY WE HAVE MISSING VALUES? 
+## BECAUSE OF THE DIFFERENCE BETWEEN UE COUNTRY CODES AND UNSD COUNTRY CODES:
+## IN UNSD UK HAS A COUNTRY CODE GB (UK FOR UE COUNTRY CODE)
+## IN UNSD GREECE HAS A COUNTRY CODE GR (EL FOR UE COUNTRY CODE)
+## REFERENCES:
+## UNSD — Methodology https://unstats.un.org/unsd/methodology/m49/
+## UE COUNTRY CODES - EUROSTAT https://ec.europa.eu/eurostat/statistics-explained/index.php/Glossary:Country_codes
+
+# check which rows in first column (Country) are empty
+which(is.na(eu_uk_pop_and_pop_density_merged)) ### DESCRIBE THIS AND PUT IN DIFFERENT CHUNK CODE ###
+
+# add names in Country column for missing values:
+#add Greece
+eu_uk_pop_and_pop_density_merged$Country[9] <- "Greece"
+# add United Kingdom
+eu_uk_pop_and_pop_density_merged$Country[28] <- "United Kingdom"
+
+####-----------------------------------------------------------------------
+
+### eu_uk_pop_and_pop_density_merged is ready to use ###
+
+
+
+# 2) prepare the data of covid deaths and confirmed cases-----------------------
+
+## COVID DATASETS CONTAIN DATA BETWEEN 22/1/2020 AND 18/1/2021
+## DATASETS ARE VERY LARGE AND HAVE A WIDE DATA FORMAT
+## THE NUMBER OF DEATHS (cumulative total) OR CONFIRMED CASES (cumulative total)
+# ARE STORED IN ROWS
+## THE DATES ARE STORED IN COLUM NAMES (AS STRINGS)
+## WE NEED TO:
+## SELECT EUROPEAN COUNTRIES WITHOUT THEIR PROVINCES
+## FORMAT DATA TO LONG ONE (pivot_longer())
+## CREATE NEW DATE COLUMN WITH DATE FORMAT
+## SELECT COLUMNS THAT STORE DATA WE NEED
+
+# create the function that select and format covid data as above
+covid_altered_data_f <- function(df, name_of_the_dataset) {
+  # get rid of provinces/states data
+  no_provinces_states <- df %>%
+    filter(`Province/State` %in%  NA_character_)
+  # select the covid data for uK and EU only
+  # by using join() with eu_uk_pop_and_pop_density_merged dataset
+  merged_df <- no_provinces_states %>%
+    right_join(eu_uk_pop_and_pop_density_merged, 
+               by = c("Country/Region" = "Country")) %>%
+                # change name column Country/Region into Country
+                rename(c('Country' = 'Country/Region')) 
+  # select the dates and change datasets into long format
+  long <- pivot_longer(merged_df,
+                       # covid deaths and conf_cases columns
+                       cols = `1/22/20`:`1/18/21`,
+                       # create dates_raw column with dates from column names
+                       names_to = "dates_raw",
+                       # create column to store values (deaths or conf_cases)
+                       values_to = name_of_the_dataset)
+  # add the Date column with date format of data
+  long_and_date <- long %>%
+    mutate(Date = mdy(dates_raw))
+  # get rid of columns that we don't need and keep data about:
+  # Country, geo data (Lat, Long), Population_2008, Pop_density_[persons_per_km2],
+  # covid_conf_cases_cum, Date and change order of columns
+  selected <- long_and_date %>%
+    select(10, 1, 3, 4, 6, 7, 9)
+  # return from function
+  return(selected)
+}
+# set up the names in created list of covid dfs
+names(covid_datasets_raw) <- c("covid_conf_cases_cum", "covid_deaths_cum")
+
+# apply created function to clean, filter, and merge data we want
+covid_eu_uk_selected = map2(covid_datasets_raw,
+                            names(covid_datasets_raw),
+                            covid_altered_data_f)
+
+
+##========= MERGE DATA INTO ONE DATASET ====================================
+
+## MERGE THE COVID DATA 
+## CALCULATIE THE RATIO OF COVID CONFIMRED CASES PER 100,000 PEOPLE
+## AND CREATE A COLUMN WITH THIS RATIO
+
+# merge covid deaths and confirmed cases data into one dataset
+covid_eu_uk_selected_merged = covid_eu_uk_selected[[1]] %>%
+  # add the column with covid deaths
+  left_join(covid_eu_uk_selected[[2]]) %>%
+#  # change the order of columns
+#  select(1, 2, 3, 4, 5, 7, 6) %>%
+  # add new column with ratio (rounded) of covid_conf_cases_cum per 100,000 people
+  mutate(Conf_cases_Ratio = round((covid_conf_cases_cum/(Population_2018/100000)),
+                                       # with two decimal
+                                       digits = 2)) %>%
+  # add new column with ratio (rounded) of covid_deaths_cum per 100,000 people
+  mutate(Deaths_Ratio = round((covid_deaths_cum/(Population_2018/100000)),
+                                       # with two decimal
+                                       digits = 2))
+
+## CREATE NEW DATAFRAME WITH DATA FROM covid_eu_uk_selected_merged
+## THAT CONTAINS COVID DEATHS (CUMULATIVE), CONFIRMED CASES (CUMULATIVE) AND
+# CONF_CASES_RATIO FOR THE LATEST DAY (18/01/2021)
+# create a new dataframe described above
+covid_eu_uk_selected_merged_latest_day = covid_eu_uk_selected_merged %>%
+  # filter data from 2021-01-18
+  filter(`Date` %in%  as.Date("2021-01-18"))
+
+
+#------- ADDITIONAL FEATURES - REMOVE IF NOT NEEDED ----------------------------
+## THE FUNCTION CREATED BELOW HELPS TO FILTER THE DATA FOR ONE COUNTRY
+## USE IT ON covid_eu_uk_selected_merged DATASET TO SEE HOW VALUES OF
+## COVID DEATHS AND CONFIRMED CASES CHANGED EVERY DAY
+## ADD A COLUMN THAT SHOW NEW CONF_CASES FOR EACH DAY
+## ADD A COLUMN THAT SHOW NEW DEATHS FOR EACH DAY
+## SELECT THE COLUMNS WITH DATA WE NEED AND SKIP OTHERS
+
+# create a function that select the data for one chosen country
+# and remove columns which are not useful 
+chosen_country_daily_numbers <- function(country) {
+  one_country <- covid_eu_uk_selected_merged %>%
+    # filter data for one country
+    filter(`Country` %in% country) %>%
+    # select columns that have the data we need
+    select(1, 2, 7, 8, 9)
+  # add new columns which shows new confirmed cases / deaths for each day
+  altered_data <- one_country %>%
+    # create a column that count new conf_cases each day
+    mutate(New_conf_cases = c(0, diff(one_country$covid_conf_cases_cum))) %>%
+    # create a column that count new deaths each day
+    mutate(New_deaths = c(0, diff(one_country$covid_deaths_cum))) %>%
+    # change the order of columns and get rid of Conf_cases_Ratio
+    select(1, 2, 6, 3, 7, 4)
+  return(altered_data)
+}
+
+uk_daily_numbers = chosen_country_daily_numbers("United Kingdom")
+
+#--------------- SUMMARY TABLE 1 -----------------------------------------------
+# MINIMUM, AVERAGE AND MAXIMUM VALUES FOR:
+# Conf_cases_cum
+# Deaths_cum
+# Conf_cases_Ratio
+# Deaths_Ratio
+
+# create vector that will be the first column with names in rows
+Type <- c("Minimum", "Average", "Maximum")
+
+# create vector that will be the second column with data
+Confirmed_cases_cumulatively <- c(min(covid_eu_uk_selected_merged_latest_day$covid_conf_cases_cum),
+                                 mean(covid_eu_uk_selected_merged_latest_day$covid_conf_cases_cum),
+                                 max(covid_eu_uk_selected_merged_latest_day$covid_conf_cases_cum))
+
+# create vector that will be the third column with data
+Deaths_cumulatively <- c(min(covid_eu_uk_selected_merged_latest_day$covid_deaths_cum),
+                                 mean(covid_eu_uk_selected_merged_latest_day$covid_deaths_cum),
+                                 max(covid_eu_uk_selected_merged_latest_day$covid_deaths_cum))
+
+# create vector that will be the fourth column with data
+Confirmed_cases_Ratio <- c(min(covid_eu_uk_selected_merged_latest_day$Conf_cases_Ratio),
+                                 mean(covid_eu_uk_selected_merged_latest_day$Conf_cases_Ratio),
+                                 max(covid_eu_uk_selected_merged_latest_day$Conf_cases_Ratio))
+
+# create vector that will be the fifth column with data
+Deaths_Ratio <- c(min(covid_eu_uk_selected_merged_latest_day$Deaths_Ratio),
+                                 mean(covid_eu_uk_selected_merged_latest_day$Deaths_Ratio),
+                                 max(covid_eu_uk_selected_merged_latest_day$Deaths_Ratio))
+
+# create the data frame with all five vectors created above
+my_summary_table <- data.frame(Type, Confirmed_cases_cumulatively, Deaths_cumulatively, Confirmed_cases_Ratio, Deaths_Ratio)
+
+
+
+
+
+#--------- SUMMARY TABLE 2 -----------------------------------------------------
+# CONFIRMED CASES RATIO VS POPULATION DENSITY
+# CREATE TWO TABLES
+
+# data for the first table
+t1_highest_pop_density <- covid_eu_uk_selected_merged_latest_day %>%
+  # select columns Country, Pop_density_[persons_per_km2] and Conf_cases_Ratio
+  select(`Country`, `Pop_density_[persons_per_km2]`, `Conf_cases_Ratio`) %>%
+  # arrange data from the highest population density
+  arrange(desc(`Pop_density_[persons_per_km2]`))
+
+# data for the second table
+t2_highest_conf_cases_ratio <- covid_eu_uk_selected_merged_latest_day %>%
+  # select columns Country, Pop_density_[persons_per_km2] and Conf_cases_Ratio
+  select(`Country`, `Conf_cases_Ratio`, `Pop_density_[persons_per_km2]`) %>%
+  # arrange data from the highest confirmed cases ratio
+  arrange(desc(`Conf_cases_Ratio`))
+
+# TO PRINT TWO TABLES SIDE BY SIDE SAVE THEM AS A LIST
+my_summary_table_2 <- list(t1_highest_pop_density, t2_highest_conf_cases_ratio)
+#-------------------------------------------------------------------------------
+
+```
+
+######
+
+# Main Findings
+
+- Great Britain has the highest total number of COVID-19 confirmed cases and deaths. However, taking into account the size of the country's population, the United Kingdom is outside the top four of the countries with the highest death rate and confirmed cases rate per 100,000 inhabitants.
+
+- All 28 countries have experienced two waves of significant increases in sickness and deaths over a similar period of time.
+
+- The rate of confirmed cases of infection with the virus per one hundred thousand people is not directly related to the size of the population density.
+
+######
+
+# Executive Summary
+
+
+COVID-19 data from United Kingdom and 27 European countries have been analysed to compare the number of confirmed cases and deaths between United Kingdom and EU countries for time period from 22nd of January, 2020 to 18th of January, 2021.
+
+The total number of confirmed cases as well as deaths shows that the United Kingdom has the highest number with France and Italy as the next two countries, from all of 28 countries. However, in order for the comparison to be more reliable, the size of the population of individual countries should be taken into account.
+
+The coefficient calculated for this purpose as number of confirmed cases per 100,000 people showed, that the Czechia, Luxembourg and Slovenia are at the top of the list, while the United Kingdom is in two-thirds of it. The countries with the lowest confirmed cases rate are Finland, Greece and Germany.
+
+With a death rate calculated as the number of deaths per 100,000 inhabitants, the country with the highest ratio is Belgium, then Slovenia and Italy. The United Kingdom ranks fifth, just behind Czechia. Finland has the lowest rate again, followed by Cyprus and Estonia.
+
+
+######
+
+# Data summary
+
+
+## Summary of data for the United Kingdom
+
+The first period of significant increases for the number of new confirmed cases occurred between March and June, with a peak of 5,490 cases dated the latter part of April. The second significant increase occurred between early October and January, peaking at 68,053 cases on January 8, 2021. 
+In the case of virus-related deaths, a period can be distinguished between mid-March and June, when the number of new deaths increased significantly until April, reaching 1,224 and then dropping down to near zero. The second period of noticeable increases began in October, with a slight decline in mid-December, reaching the highest values in mid-January 2021.
+
+
+```{r, fig.cap = "*Figure 1: Daily number of COVID-19 confirmed cases and deaths on timeline for United Kingdom*"}
+# prepare data
+data_to_plot = uk_daily_numbers %>%
+  pivot_longer(.,
+               # covid deaths and conf_cases columns
+               cols = c(`New_conf_cases`, `New_deaths`),
+               # create column with names for daily number of deaths and conf_cases 
+               names_to = "Type",
+               # create column with values for daily number of deaths and conf_cases
+               values_to = "Values")
+
+plot_ly(data_to_plot,
+        # define what data should be on x axis
+        x = ~Date,
+        # define what data should be on y axis
+        y = ~Values,
+        # define that colours of the chart based on Type
+        color = ~Type,
+        # define the colour scheme of the lines from RColorBrewer
+        colors = "Dark2",
+        # define a type of the chart
+        type = "scatter",
+        # define a mode
+        mode = "points") %>%
+          # add title, X and Y axis labels
+          layout(title = "<b>Daily number of COVID-19 confirmed cases and deaths on timeline for United Kingdom </b>",
+            xaxis = list(title = "Date"),
+            yaxis = list(title = "Number of new conf_cases/deaths"),
+            # change the legend position and add the title
+            legend = list(x = 0.01, y = 0.9, title = list(text = "<b> Select one by clicking on the names below </b>")))
+```
+
+
+In both cases, two periods of growth can be seen, with a significant decline in value in between. The reason for the decrease in the daily number of confirmed cases and deaths is the decision of the authorities to introduce significant restrictions on the movement of residents and limit the operation of some companies, especially related to on-site customer service.
+
+The period of relaxation of the restrictions, as well as a new strain of the virus that spreads faster, are likely to cause the second phase of growth to be much higher than the first. The noticeable decline around mid-January 2021 may be related to new restrictions introduced by the Government in the United Kingdom.
+
+######
+
+## Summary of data for all European countries
+
+
+Each of the twenty-eight countries experienced an increase in the total number of cases of the virus in the first quarter of 2020. In most countries, the number of cases flattened in the middle of the year, then increased significantly by the end of 2020. The same was true for the total number of deaths.
+
+
+```{r fig.cap = "*Figure 2: COVID-19 confirmed cases counted cumulatively in UK and EU countries*"}
+plot_ly(covid_eu_uk_selected_merged,
+        # define what data should be on x axis
+        x = ~Date,
+        # define what data should be on y axis
+        y = ~covid_conf_cases_cum,
+        # define that colours of the chart based on XXX
+        color = ~`Country`,
+        # define the colour scheme of the lines from RColorBrewer
+        colors = "Set3",
+        # define a type of the chart
+        type = "scatter",
+        # define a mode
+        mode = "lines") %>%
+          # Set the title, X and Y axis labels
+          layout(title = "<b>COVID-19 confirmed cases counted cumulatively in UK and EU countries</b>",
+            xaxis = list(title = "Date"),
+            yaxis = list(title = "Number of conf_cases counted cumulatively"),
+            # add the legend title
+            legend = list(title = list(text = "<b>Select one or more</b>")))
+```
+
+
+```{r, fig.cap = "*Figure 3: COVID-19 deaths counted cumulatively in UK and EU countries*"}
+plot_ly(covid_eu_uk_selected_merged,
+        # define what data should be on x axis
+        x = ~Date,
+        # define what data should be on y axis
+        y = ~covid_deaths_cum,
+        # define that colours of the chart based on XXX
+        color = ~`Country`,
+        # define the colour scheme of the lines from RColorBrewer
+        colors = "Paired",
+        # define a type of the chart
+        type = "scatter",
+        # define a mode
+        mode = "lines") %>%
+          # Set the title, X and Y axis names
+          layout(title = "<b>COVID-19 deaths counted cumulatively in UK and EU countries</b>",
+            xaxis = list(title = "Date"),
+            yaxis = list(title = "Number of deaths counted cumulatively"),
+            # add the legend title
+            legend = list(title = list(text = "<b>Select one or more</b>")))
+```
+
+
+Comparing the total number of deaths and confirmed cases caused by the virus for all European countries, Great Britain has the highest values in both cases.
+
+
+```{r, fig.cap = "*Figure 4: Total number of COVID-19 Confirmed Cases for UK and EU countries*"}
+## bar chart -  data: covid_eu_uk_selected_merged_latest_day
+## TOTAL CONFIRMED CASES FOR UK AND EU COUNTRIES - SORTED FROM LOWEST TO HIGHEST
+
+# prepare data for plot (sort countries by value of conf_cases_cum)  
+data_to_plot <- covid_eu_uk_selected_merged_latest_day[order(covid_eu_uk_selected_merged_latest_day$covid_conf_cases_cum), ]
+# create bar chart
+plot_ly(data_to_plot, # data
+        # select data for x axis
+        x = ~Country,
+        # select data for y axis
+        y = ~covid_conf_cases_cum,
+        # define type of a chart
+        type = "bar",
+        # define color based on values from chosen column
+        color = ~covid_conf_cases_cum,
+        # change color palettes from RColorBrewer
+        colors = "PuOr") %>%
+  # hide colorbar (legend)
+  hide_colorbar() %>%
+  # change layout
+  layout(
+    # add a title
+    title = "<b>Total number of COVID-19 Confirmed Cases for UK and EU countries",
+    # change label on y axis
+    yaxis = list(title = "Number of confirmed cases"),
+    # remove label on x axis (not needed in this case)
+    xaxis = list(title = "",
+                 # sort bars by value of covid_conf_cases_cum
+                 categoryarray = data_to_plot$covid_conf_cases_cum,
+                 # change the angle of x labels
+                 tickangle = 45))
+```
+
+
+```{r, fig.cap = "*Figure 5: Total number of COVID-19 Deaths for UK and EU countries*"}
+## bar chart -  data: covid_eu_uk_selected_merged_latest_day
+## TOTAL DEATHS FOR UK AND EU COUNTRIES - SORTED FROM LOWEST TO HIGHEST
+
+# prepare data for plot (sort countries by value of total deaths)  
+data_to_plot <- covid_eu_uk_selected_merged_latest_day[order(covid_eu_uk_selected_merged_latest_day$covid_deaths_cum), ]
+# create bar chart
+plot_ly( data_to_plot, # data
+        # select data for x axis
+        x = ~Country,
+        # select data for y axis
+        y = ~covid_deaths_cum,
+        # define type of a chart
+        type = "bar",
+        # define color based on values from chosen column
+        color = ~covid_deaths_cum,
+        # change color palettes from RColorBrewer
+        colors = "RdGy") %>%
+  # hide colorbar (legend)
+  hide_colorbar() %>%
+  # change layout
+  layout(
+    # add a title
+    title = "<b>Total number of COVID-19 Deaths for UK and EU countries",
+    # change label on y axis
+    yaxis = list(title = "Number of deaths"),
+    # remove label on x axis (not needed in this case)
+    xaxis = list(title = "",
+                 # sort bars by value of covid_deaths_cum
+                 categoryarray = data_to_plot$covid_deaths_cum,
+                 # change the angle of x labels
+                 tickangle = 45))
+```
+
+
+Bearing in mind the fairness of the comparison, the country's population should be taken into account as an additional factor. For this purpose, ratios of deaths and confirmed cases per 100,000 inhabitants have been calculated.
+
+The Czech Republic, Luxembourg and Slovenia have the highest ratio of COVID-19 cases. The United Kingdom is in one third of the list, while the last three places belong to Germany, Greece and Finland.
+
+
+```{r, fig.cap = "*Figure 6: COVID-19 Confirmed Cases Ratio in UK and EU countries*"}
+## bar chart - data: covid_eu_uk_selected_merged_latest_day
+## CONFIRMED CASES RATIO FOR UK AND EU COUNTRIES - SORTED FROM LOWEST TO HIGHEST
+
+# prepare data to plot by order countries by value of confirmed cases per 100,000  
+data_to_plot <- covid_eu_uk_selected_merged_latest_day[order(covid_eu_uk_selected_merged_latest_day$Conf_cases_Ratio), ]
+
+plot_ly(data_to_plot, # data
+        # define data for x axis
+        x = ~Country,
+        # define data for y axis
+        y = ~Conf_cases_Ratio,
+        # define type of the chart
+        type = "bar",
+        # color depends on Conf_cases_Ratio
+        color = ~Conf_cases_Ratio,
+        # change color palettes from RColorBrewer
+        colors = "GnBu") %>%
+  # hide colorbar (legend)
+  hide_colorbar() %>%
+  # change layout
+  layout(
+    # add a title
+    title = "<b>COVID-19 Confirmed Cases Ratio in UK and EU countries",
+    # change label on y axis
+    yaxis = list(title = "Number of cases per 100,000 people"),
+    # remove label on x axis (not needed in this case)
+    xaxis = list(title = "",
+                 # sort bars by value of Conf_cases_Ratio
+                 categoryarray = data_to_plot$Conf_cases_Ratio,
+                 # change the angle of x labels
+                 tickangle = 45))
+
+```
+
+
+```{r, fig.cap = "*Figure 7: COVID-19 confirmed cases Ratio in UK and EU countries - map*"}
+#-------- plotly geo map 2--------------------------------------------
+
+plot_ly(data = covid_eu_uk_selected_merged_latest_day,
+        # specify latitude column
+        lat = ~Lat,
+        # specify longitude column
+        lon = ~Long,
+        # specify the text and data shown on the markers when highlighted
+        text = paste0(covid_eu_uk_selected_merged_latest_day$Country,
+                      '<br>Conf_cases_RATIO: ',
+                      covid_eu_uk_selected_merged_latest_day$Conf_cases_Ratio),
+        # specify marker as a conf_cases_Ratio data and adjust size on the chart
+        marker = list(size = ~Conf_cases_Ratio/150),
+        # specify type of the chart and mode
+        type = "scattergeo", mode = "markers") %>%
+  # set default scope on Europe
+  layout(geo = list(scope = "europe"))
+```
+
+
+The countries with the highest death ratio caused by virus are Belgium, Slovenia and Italy. Whereas Finland, Cyprus and Estonia have the smallest level of this ratio. Great Britain is in fifth place.
+
+
+```{r, fig.cap = "*Figure 8: COVID-19 Deaths Ratio in UK and EU countries*"}
+## bar chart - data: covid_eu_uk_selected_merged_latest_day
+## DEATHS RATIO FOR UK AND EU COUNTRIES - SORTED FROM LOWEST TO HIGHEST
+
+# prepare data to plot by order countries by value of confirmed cases per 100,000  
+data_to_plot <- covid_eu_uk_selected_merged_latest_day[order(covid_eu_uk_selected_merged_latest_day$Deaths_Ratio), ]
+
+plot_ly(data_to_plot, # data
+        # define data for x axis
+        x = ~Country,
+        # define data for y axis
+        y = ~Deaths_Ratio,
+        # define the type of the chart
+        type = "bar",
+        # color depends on Deaths_Ratio
+        color = ~Deaths_Ratio,
+        # change color palettes from RColorBrewer
+        colors = "OrRd") %>%
+  # hide colorbar (legend)
+  hide_colorbar() %>%
+  # change layout
+  layout(
+    # add a title
+    title = "<b>COVID-19 Deaths Ratio in UK and EU countries",
+    # change label on y axis
+    yaxis = list(title = "Number of deaths per 100,000 people"),
+    # remove label on x axis (not needed in this case)
+    xaxis = list(title = "",
+                 # sort bars by value of Conf_cases_Ratio 
+                 categoryarray = data_to_plot$Conf_cases_Ratio,
+                 # change the angle of x labels
+                 tickangle = 45))
+```
+
+
+```{r, fig.cap = "*Figure 9: COVID-19 deaths Ratio in UK and EU countries - map*"}
+#-------- plotly geo map 3--------------------------------------------
+plot_ly(data = covid_eu_uk_selected_merged_latest_day,
+        # specify latitude column
+        lat = ~Lat,
+        # specify longitude column
+        lon = ~Long,
+        # change color
+        color = 'orange',
+        # specify the text and data shown on the markers when highlighted
+        text = ~paste(covid_eu_uk_selected_merged_latest_day$Country,
+                      '<br>Deaths_RATIO: ',
+                      covid_eu_uk_selected_merged_latest_day$Deaths_Ratio),
+        # specify marker as a conf_cases_Ratio data and adjust size on the chart
+        marker = list(size = ~Deaths_Ratio/4),
+        # specify type of the chart and mode
+        type = "scattergeo", mode = "markers") %>%
+  # set default scope on Europe
+  layout(geo = list(scope="europe"))
+```
+
+
+
+A table summarizing the minimum, average and maximum values for the number of confirmed cases, deaths and their ratio has been prepared below.
+
+
+```{r}
+kbl(my_summary_table, caption = "<i>Table 1: Summary table with minimum, average and maximum values for <b>covid_eu_uk_selected_merged_latest_day</b> dataset</i>") %>%
+  kable_classic_2(full_width = TRUE)
+```
+
+######
+
+## Confirmed cases ratio vs population density
+
+It seems interesting to investigate whether the countries with the highest ratio of confirmed cases are also the most densely populated. To compare these data, the following grouped bar chart has been prepared, with the values sorted by the size of the indicator of confirmed COVID-19 cases.
+
+
+```{r, fig.cap = "*Figure 10: COVID-19 Confirmed cases Ratio vs Population density*"}
+#--------------------------- TEST ----------------------------------------------
+## Grouped Bar Chart - data: covid_eu_uk_selected_merged_latest_day
+## CONFIRMED CASES RATIO vs POPULATION DENSITY - SORTED FROM LOWEST TO HIGHEST RATIO
+
+# prepare data to plot by order countries by value of confirmed cases per 100,000  
+data_to_plot <- covid_eu_uk_selected_merged_latest_day[order(covid_eu_uk_selected_merged_latest_day$`Pop_density_[persons_per_km2]`), ]
+
+plot_ly(data_to_plot, # data
+        # define data for x axis
+        x = ~Country,
+        # define data for y axis
+        y = ~Conf_cases_Ratio,
+        # define the type of the chart
+        type = "bar",
+        name = "Conf_cases_Ratio") %>%
+  # add trace with population density
+  add_trace(y = ~`Pop_density_[persons_per_km2]`,
+            name = "Pop_density") %>%
+  # change layout
+  layout(title = "<b>Confirmed cases Ratio vs Population density</b>",
+         yaxis = list(title = "Count"),
+         barmode = "group",
+         xaxis = list(title = "",
+                 # sort bars by value of Conf_cases_Ratio 
+                 categoryarray = data_to_plot$`Pop_density_[persons_per_km2]`,
+                 # change the angle of x labels
+                 tickangle = 45),
+          # add the legend title
+         legend = list(title = list(text = "<b>Select one or both</b>")))
+```
+
+
+The country with the highest population density is Malta. However, in terms of confirmed cases ratio, it is in the twentieth place out of twenty-eight countries.
+Finland has the lowest proportion of confirmed cases per 100,000 people and its population density is also the lowest.
+
+Taking into account other countries, such as the Netherlands, Sweden, Lithuania or Slovenia, it seems clear that it is impossible to directly associate a higher population density with a higher confirmed COVID-19 cases ratio.
+
+```{r}
+kbl(my_summary_table_2, caption = "<i>Table 2: The list of country's population density and COVID-19 confirmed cases ratio, sorted from highest value to lowest</i>") %>%
+  kable_classic_2(full_width = TRUE)
+```
+
+######
+
+## Conclusions
+
+All countries have experienced two major periods of increase in COVID-19 cases and deaths over a similar period of time. It would be worth to investigate the reasons for their ups and downs, looking for data on country-specific restrictions and other factors, such as a new virus variant. However, it should be clearly stated that the data on them were not the subject of this report.
+
+No evidence was found to support the idea that countries with the highest population density have the highest virus infection rate.
+
+######
+
+
+# Data preparation
+
+######
+
+#### **1. Additional datasets**
+
+
+###### Dataset containing country codes
+
+*[The source of the dataset with country codes](https://unstats.un.org/unsd/methodology/m49/overview)*
+
+This dataset was retrieved from the United Nations Statistics Division and has been used to obtain the names of the countries to add them to other two additional datasets containing data on the population and population density.
+For this purpose, two columns containing country names and country codes have been filtered and saved.
+
+
+
+##### Datasets containing data about population and population density 
+
+*[The source of the dataset with population of European countries](https://ec.europa.eu/eurostat/databrowser/view/DEMO_R_GIND3__custom_521298/default/table?lang=en)*
+  
+*[The source of the dataset with population density of European countries](https://ec.europa.eu/eurostat/databrowser/view/TPS00003/bookmark/table?lang=en&bookmarkId=06727f8a-b730-47ef-bac4-6fe8dbe3e4a2)*
+
+These datasets were retrived from Eurostat, the statistical office of the European Union. The first dataset has been used to obtain population of countries in Europe. Some numerical data has been marked by `p`, which stood for provisional. This has been cleaned and formatted.
+The population density dataset contained the most recent data for 2018, therefore this year is included for the population data. The first columns of both datasets contained strings. They were used to remove redundant provincial data and extract country codes from them.
+
+The population and population density data were combined into a single dataset containing only 28 countries (UK + EU countries), to which the country names from the country code dataset were added.
+
+As it turned out, the created dataset did not contain the names of two countries. The reason was the difference between the methodology used by [European Union](https://ec.europa.eu/eurostat/statistics-explained/index.php/Glossary:Country_codes) and [UNSD](https://unstats.un.org/unsd/methodology/m49/) in the country codes. The United Kingdom has the UNSD country code GB and the European Union country code UK. Likewise Greece: GR according to UNSD and EL for the European Union. The names of these countries have been added.
+
+```{r}
+kbl(missing_values_1, caption = "<i>Table 3: Missing values in <b>eu_uk_pop_and_pop_density_merged</b> dataset</i>") %>%
+  kable_classic_2(full_width = TRUE)
+
+```
+######
+
+#### **2. Datasets containing COVID-19 confirmed cases and deaths** 
+
+*[The source of the dataset with COVID-19 confirmed cases](https://www.kaggle.com/antgoldbloom/covid19-data-from-john-hopkins-university?select=RAW_global_confirmed_cases.csv)*
+
+*[The source of the dataset with COVID-19 deaths Europe](https://www.kaggle.com/antgoldbloom/covid19-data-from-john-hopkins-university?select=RAW_global_deaths.csv)*
+
+Both datasets contained global data of COVID-19 confirmed cases/deaths counted cumulatively. They have been downloaded as a RAW datasets in `.csv` format from [Kaggle website](https://www.kaggle.com) and are described as the updating version of COVID-19 Data Repository by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University (JHU). 
+
+They have an identical structure, having columns with country/region names, province/state names, latitude and longitude of countries and data about COVID-19 stored in 363 columns, every each for a day from 22/01/2020 to 18/01/2021.
+
+They have been formatted and filtered to obtain values for United Kingdom and 27 European countries in a long format of data.
+
+######
+
+#### **3. Combining prepared datasets into one** 
+
+The data of COVID-19 confirmed cases and deaths have been merged with population and population density data. Two new columns containing the ratio of confirmed COVID-19 cases and deaths per one hundred thousand inhabitants have been calculated and added.
+
+Due to the fact that the COVID-19 data contained in this dataset was counted cumulatively for each day, it was necessary to filter the data for the last available day.
+
+```{r}
+kbl(head(covid_eu_uk_selected_merged_latest_day), caption = "<i>Table 4: Previev of  <b>covid_eu_uk_selected_merged_latest_day</b> dataset</i>") %>%
+  kable_classic_2(full_width = FALSE)
+```
+
+
+To present the situation in the United Kingdom, data has been filtered and modified by adding two new columns with calculated number of new confirmed cases/deaths for each day. 
+
+######
+
+## References
+
+
+---
+nocite: '@*'
+---
