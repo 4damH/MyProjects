@@ -14,7 +14,7 @@ library(plotly)
 # read data in
 # I'll use one of the dataset cleaned already in Exercises_pt8
 # Please change the filepath if necessary
-weather_df <- read_csv("C:/Users/adamh/Documents/10 FolderFor_R/Intro_to_R_Data_Vis/Assessments/AH_Shiny_assessment/Braemar_AH_shiny.csv")
+weather_df <- read_csv("C:/Users/xxxxx/xxxxx/.../Braemar_AH_shiny.csv")
 variable_to_choose <- weather_df %>%
           select(3:7)
 
